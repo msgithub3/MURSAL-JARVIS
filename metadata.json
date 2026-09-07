@@ -1,0 +1,6 @@
+{
+  "name": "MURSAL JARVIS",
+  "description": "Unified Personal AI & Voice Assistant ecosystem with Multimodal Intelligence, MURSALCART Pakistani E-Commerce Engine, Android Automation, and Secure Device Mesh.",
+  "requestFramePermissions": ["microphone", "camera", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
