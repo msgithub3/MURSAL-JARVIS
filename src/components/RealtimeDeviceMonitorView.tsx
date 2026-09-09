@@ -27,6 +27,9 @@ import {
   ChevronRight,
   Clock,
   Terminal,
+  Monitor,
+  Video,
+  VideoOff,
 } from 'lucide-react';
 import {
   FullDeviceState,
@@ -58,6 +61,15 @@ export const RealtimeDeviceMonitorView: React.FC = () => {
   const [selectedEventFilter, setSelectedEventFilter] = useState<'ALL' | 'CRITICAL' | 'HIGH' | 'NORMAL'>('ALL');
   const [actionFeedback, setActionFeedback] = useState<string | null>(null);
 
+  // Laptop/Desktop Web Screen Capture State
+  const [isLaptopCapturing, setIsLaptopCapturing] = useState(false);
+  const [laptopFramesSent, setLaptopFramesSent] = useState(0);
+  const [laptopCaptureError, setLaptopCaptureError] = useState<string | null>(null);
+  const streamRef = React.useRef<MediaStream | null>(null);
+  const captureTimerRef = React.useRef<any>(null);
+  const hiddenVideoRef = React.useRef<HTMLVideoElement | null>(null);
+  const hiddenCanvasRef = React.useRef<HTMLCanvasElement | null>(null);
+
   // Subscriptions to singletons
   useEffect(() => {
     const unsubDevice = globalDeviceMonitor.subscribe((state) => setDeviceState(state));
@@ -75,8 +87,93 @@ export const RealtimeDeviceMonitorView: React.FC = () => {
       unsubScreen();
       unsubEvents();
       unsubQueue();
+      if (captureTimerRef.current) clearInterval(captureTimerRef.current);
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+      }
     };
   }, []);
+
+  const startLaptopScreenCapture = async () => {
+    setLaptopCaptureError(null);
+    try {
+      if (!navigator?.mediaDevices?.getDisplayMedia) {
+        throw new Error('Screen capture API (getDisplayMedia) not supported in this browser.');
+      }
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { cursor: 'always' as any },
+        audio: false,
+      });
+      streamRef.current = stream;
+
+      const video = document.createElement('video');
+      video.autoplay = true;
+      video.muted = true;
+      video.playsInline = true;
+      video.srcObject = stream;
+      hiddenVideoRef.current = video;
+
+      await video.play();
+
+      setIsLaptopCapturing(true);
+      globalScreenIntelligence.startContinuousMonitoring('PERIODIC_SAMPLING', 1200);
+      setActionFeedback('Laptop Screen Capture active. Ephemeral sampling engaged.');
+
+      stream.getVideoTracks()[0].onended = () => {
+        stopLaptopScreenCapture();
+      };
+
+      const canvas = document.createElement('canvas');
+      canvas.width = 640;
+      canvas.height = 360;
+      hiddenCanvasRef.current = canvas;
+      const ctx = canvas.getContext('2d');
+
+      captureTimerRef.current = setInterval(async () => {
+        if (!video.videoWidth || !video.videoHeight || !ctx) return;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+
+        setLaptopFramesSent((prev) => prev + 1);
+
+        try {
+          await fetch('/api/jarvis/screen/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              foregroundPackage: 'com.mursal.laptop.desktop',
+              foregroundActivity: document.title || 'Laptop Display',
+              imageThumbnailUrl: dataUrl,
+              ocrText: `Active Web Cockpit: ${document.title}. Screen capture stream active.`,
+              clientTimestamp: Date.now(),
+              screenWidth: window.innerWidth,
+              screenHeight: window.innerHeight,
+            }),
+          });
+        } catch {
+          // ignore transient post error
+        }
+      }, 1200);
+    } catch (err: any) {
+      console.error('getDisplayMedia error:', err);
+      setLaptopCaptureError(err?.message || 'Permission denied or capture failed');
+      setIsLaptopCapturing(false);
+    }
+  };
+
+  const stopLaptopScreenCapture = () => {
+    if (captureTimerRef.current) {
+      clearInterval(captureTimerRef.current);
+      captureTimerRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+    setIsLaptopCapturing(false);
+    globalScreenIntelligence.stopContinuousMonitoring();
+    setActionFeedback('Laptop Screen Capture stopped. Buffers cleared.');
+  };
 
   const handleProfileChange = (profile: MonitoringProfile) => {
     globalDeviceMonitor.setMonitoringProfile(profile);
@@ -521,6 +618,101 @@ export const RealtimeDeviceMonitorView: React.FC = () => {
                 <p className="leading-relaxed">{screenQueryResult}</p>
               </div>
             )}
+
+            {/* Laptop / Desktop Realtime Screen Intelligence Sub-Panel */}
+            <div className="p-3 rounded-lg bg-[#0e0e14] border border-[#222230] space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Monitor className="w-4 h-4 text-cyan-400" />
+                  <span className="text-xs font-mono font-bold text-white uppercase tracking-wider">
+                    Laptop / Desktop Screen Capture
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      isLaptopCapturing ? 'bg-emerald-400 animate-pulse' : 'bg-neutral-600'
+                    }`}
+                  />
+                  <span className="text-[10px] font-mono text-[#8a8a9a]">
+                    {isLaptopCapturing ? 'STREAMING ACTIVE' : 'STANDBY'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Real-time Telemetry Metrics */}
+              <div className="grid grid-cols-4 gap-2 text-center font-mono">
+                <div className="p-2 rounded bg-[#14141c] border border-[#1e1e28]">
+                  <span className="text-[9px] text-[#666678] block">MODE</span>
+                  <span className="text-[11px] font-bold text-cyan-300">
+                    {screenState.monitoringMetrics?.mode || 'SAMPLING'}
+                  </span>
+                </div>
+                <div className="p-2 rounded bg-[#14141c] border border-[#1e1e28]">
+                  <span className="text-[9px] text-[#666678] block">SAMPLING</span>
+                  <span className="text-[11px] font-bold text-emerald-400">
+                    {isLaptopCapturing ? '0.8 Hz' : 'Standby'}
+                  </span>
+                </div>
+                <div className="p-2 rounded bg-[#14141c] border border-[#1e1e28]">
+                  <span className="text-[9px] text-[#666678] block">TRANSPORT</span>
+                  <span className="text-[11px] font-bold text-white">
+                    {screenState.monitoringMetrics?.transportLatencyMs ?? 4} ms
+                  </span>
+                </div>
+                <div className="p-2 rounded bg-[#14141c] border border-[#1e1e28]">
+                  <span className="text-[9px] text-[#666678] block">FRAMES</span>
+                  <span className="text-[11px] font-bold text-cyan-400">
+                    {isLaptopCapturing ? laptopFramesSent : screenState.monitoringMetrics?.framesIngested ?? 0}
+                  </span>
+                </div>
+              </div>
+
+              {/* Start / Stop Screen Capture Trigger */}
+              <div className="flex items-center gap-2">
+                {!isLaptopCapturing ? (
+                  <button
+                    type="button"
+                    onClick={startLaptopScreenCapture}
+                    className="flex-1 py-2 px-3 bg-cyan-600/90 hover:bg-cyan-500 text-white rounded-lg text-xs font-mono font-medium flex items-center justify-center gap-2 border border-cyan-400/30 cursor-pointer transition-colors"
+                  >
+                    <Video className="w-3.5 h-3.5" />
+                    Start Laptop Screen Monitoring (getDisplayMedia)
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={stopLaptopScreenCapture}
+                    className="flex-1 py-2 px-3 bg-red-600/90 hover:bg-red-500 text-white rounded-lg text-xs font-mono font-medium flex items-center justify-center gap-2 border border-red-400/30 cursor-pointer transition-colors"
+                  >
+                    <VideoOff className="w-3.5 h-3.5" />
+                    Stop Laptop Screen Monitoring
+                  </button>
+                )}
+              </div>
+
+              {/* Capture Error Notification */}
+              {laptopCaptureError && (
+                <div className="p-2 rounded bg-red-950/40 border border-red-800/60 text-[11px] font-mono text-red-200">
+                  Screen capture notification: {laptopCaptureError}
+                </div>
+              )}
+
+              {/* Live Captured Thumbnail Preview */}
+              {screenState.imageThumbnailUrl && (
+                <div className="rounded border border-[#242434] overflow-hidden bg-black flex flex-col items-center">
+                  <div className="w-full bg-[#121218] px-2 py-1 text-[9px] font-mono text-[#777788] flex justify-between">
+                    <span>LATEST SCREEN INGESTION FRAME</span>
+                    <span>JPEG • EPHEMERAL RAM</span>
+                  </div>
+                  <img
+                    src={screenState.imageThumbnailUrl}
+                    alt="Active Screen Ingestion"
+                    className="max-h-40 w-auto object-contain"
+                  />
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Voice Pipeline Command Queue */}

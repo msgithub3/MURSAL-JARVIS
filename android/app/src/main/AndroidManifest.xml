@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
     <!-- Network & Device Mesh -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -63,6 +64,13 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+
+        <!-- Realtime MediaProjection Screen Capture Foreground Service -->
+        <service
+            android:name=".service.JarvisScreenCaptureService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
 
         <!-- Notification Listener for Incoming Orders / WhatsApp Messages -->
         <service

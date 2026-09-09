@@ -1,133 +1,273 @@
 /**
- * MURSAL JARVIS — Automation Engine & Proactive Assistant
+ * MURSAL JARVIS — Closed-Loop Autonomous Automation Engine
  * 
- * Capabilities:
- * - Recurring Cron & Timed Automation Tasks
- * - Event-Driven Triggers:
- *   - BATTERY_LOW (< 20%): Suggests battery saver or notification to charge
- *   - TASK_COMPLETED: Telemetry callback when laptop build or testing finishes
- *   - URGENT_CUSTOMER_ORDER: Proactive prompt to review high-value COD inquiry
- *   - MORNING_BRIEFING: Generated proactively or on voice command ("Jani morning briefing")
- * - Proactive Rate Limiting (ensures JARVIS remains helpful without being annoying)
+ * Flow Architecture:
+ * TRIGGER -> RULE -> INTENT -> AGENT -> TOOLS -> SAFETY CHECK -> ACTION -> OBSERVATION -> MEMORY
+ * 
+ * Supported Trigger Types:
+ * - BATTERY_THRESHOLD (e.g. Battery < 20% or > 80%)
+ * - CHARGING_STATE (Charger connected / disconnected)
+ * - WIFI_STATE (Connected / Disconnected / SSID match)
+ * - NOTIFICATION (Incoming urgent notification)
+ * - SCHEDULE_CRON (Timed background task)
+ * - LOCATION_GEOFENCE (Arriving or leaving coordinates)
+ * - VOICE_SHORTCUT (Direct voice macro)
+ * 
+ * Safety Matrix Enforcement:
+ * - P0_SAFE: Automatic execution, silent observation & memory write
+ * - P1_CONTROLLED: Automated execution with persistent audit trail
+ * - P2_DESTRUCTIVE: PAUSES automation loop and requires explicit user confirmation before action
  */
 
-export interface ScheduledTask {
+import { ToolRegistry, globalToolRegistry, ToolRiskClass } from './toolRegistry';
+import { UnifiedMemoryManager } from './memoryManager';
+
+export type AutomationTriggerType =
+  | 'BATTERY_THRESHOLD'
+  | 'CHARGING_STATE'
+  | 'WIFI_STATE'
+  | 'NOTIFICATION'
+  | 'SCHEDULE_CRON'
+  | 'LOCATION_GEOFENCE'
+  | 'VOICE_SHORTCUT';
+
+export interface AutomationRule {
   id: string;
-  title: string;
-  cronExpr: string; // e.g., '0 8 * * *' (every day at 8 AM)
-  actionType: 'BRIEFING' | 'BACKUP_MEMORY' | 'CHECK_SUPPLIER_PRICES' | 'MESH_HEARTBEAT';
+  name: string;
+  triggerType: AutomationTriggerType;
+  condition: (context: Record<string, any>) => boolean;
+  intent: string;
+  targetTool: string;
+  toolParams: Record<string, any>;
+  riskClass: ToolRiskClass;
   isEnabled: boolean;
-  lastRunTimestamp?: number;
-  nextRunDescription: string;
+  cooldownMs: number;
+  lastExecutedAt?: number;
 }
 
-export interface ProactiveEvent {
-  id: string;
-  type: 'BATTERY_ALERT' | 'CUSTOMER_ALERT' | 'BUILD_COMPLETE' | 'DAILY_BRIEFING';
-  priority: 'LOW' | 'NORMAL' | 'HIGH' | 'CRITICAL';
-  spokenPromptUrdu: string;
-  spokenPromptEnglish: string;
-  timestamp: number;
+export interface AutomationExecutionResult {
+  ruleId: string;
+  ruleName: string;
+  intent: string;
+  status: 'EXECUTED' | 'CONFIRMATION_REQUIRED' | 'COOLDOWN_ACTIVE' | 'SKIPPED' | 'FAILED';
+  actionTaken?: string;
+  observation?: string;
+  memoryLogged?: boolean;
+  durationMs: number;
 }
 
 export class AutomationEngine {
-  private tasks: ScheduledTask[] = [
-    {
-      id: 'task-morning-briefing',
-      title: 'Morning Executive Briefing',
-      cronExpr: '0 8 * * *',
-      actionType: 'BRIEFING',
-      isEnabled: true,
-      nextRunDescription: 'Tomorrow at 08:00 AM PKT',
-    },
-    {
-      id: 'task-memory-backup',
-      title: 'Cognitive Memory State Backup',
-      cronExpr: '0 0 * * *',
-      actionType: 'BACKUP_MEMORY',
-      isEnabled: true,
-      nextRunDescription: 'Tonight at 12:00 AM PKT',
-    },
-    {
-      id: 'task-supplier-check',
-      title: 'MursalCart Markaz Supplier Price Watch',
-      cronExpr: '0 */6 * * *',
-      actionType: 'CHECK_SUPPLIER_PRICES',
-      isEnabled: true,
-      nextRunDescription: 'Every 6 hours',
-    },
-  ];
+  private rules: Map<string, AutomationRule> = new Map();
+  private toolRegistry: ToolRegistry;
+  private memoryManager?: UnifiedMemoryManager;
+  private executionHistory: AutomationExecutionResult[] = [];
 
-  private recentProactiveEvents: ProactiveEvent[] = [];
-  private lastProactiveDispatchTime = 0;
-
-  public getScheduledTasks(): ScheduledTask[] {
-    return this.tasks;
+  constructor(
+    toolRegistry: ToolRegistry = globalToolRegistry,
+    memoryManager?: UnifiedMemoryManager
+  ) {
+    this.toolRegistry = toolRegistry;
+    this.memoryManager = memoryManager;
+    this.seedDefaultRules();
   }
 
-  public toggleTask(taskId: string): boolean {
-    const t = this.tasks.find((task) => task.id === taskId);
-    if (!t) return false;
-    t.isEnabled = !t.isEnabled;
+  public registerRule(rule: AutomationRule): void {
+    this.rules.set(rule.id, rule);
+  }
+
+  public getRules(): AutomationRule[] {
+    return Array.from(this.rules.values());
+  }
+
+  public setRuleEnabled(id: string, enabled: boolean): boolean {
+    const r = this.rules.get(id);
+    if (!r) return false;
+    r.isEnabled = enabled;
     return true;
   }
 
   /**
-   * Generates full Morning Briefing
+   * Closed-Loop Evaluation Pipeline:
+   * Evaluates context against rules and executes compliant tools safely
    */
-  public generateMorningBriefing(batteryPct = 88, lang = 'ur-Roman'): string {
-    const time = '8:00 AM';
-    const city = 'Lahore / Pakistan';
-    const weather = '31°C, Clear Sky';
-
-    if (lang === 'en') {
-      return `Good morning, Mursaleen! Here is your JARVIS briefing for today. Weather in ${city} is ${weather}. Your Android phone is at ${batteryPct}% battery with device mesh securely linked to your workstation laptop. You have 3 customer inquiries on WhatsApp regarding MursalCart winning products, and all overnight syncs completed cleanly. Standing by for your commands!`;
-    }
-
-    return `Assalam o Alaikum Mursaleen jani, subah bakhair! Aaj ka morning briefing yeh hai: Lahore ka mausam ${weather} hai. Aapke mobile ki battery ${batteryPct}% hai aur laptop workstation mesh se connected hai. MursalCart pe 3 naye customer messages aaye hue hain aur system bilkul 100% active hai. Hukam karein, aaj kya plan hai?`;
-  }
-
-  /**
-   * Evaluates if a proactive alert should be emitted
-   */
-  public evaluateProactiveTriggers(telemetry: { batteryPct: number; pendingOrders: number }): ProactiveEvent | null {
+  public async evaluateTriggers(
+    triggerType: AutomationTriggerType,
+    context: Record<string, any>,
+    userConfirmed = false
+  ): Promise<AutomationExecutionResult[]> {
+    const results: AutomationExecutionResult[] = [];
     const now = Date.now();
-    // Rate limit: at least 3 minutes between proactive voice interruptions
-    if (now - this.lastProactiveDispatchTime < 180000) return null;
 
-    if (telemetry.batteryPct < 15) {
-      this.lastProactiveDispatchTime = now;
-      const ev: ProactiveEvent = {
-        id: `event-${now}`,
-        type: 'BATTERY_ALERT',
-        priority: 'HIGH',
-        spokenPromptUrdu: 'Jani, phone ki battery 15% se kam ho gayi hai. Charger laga dein taake mesh active rahe.',
-        spokenPromptEnglish: 'Mursaleen, battery has dropped below 15%. Please connect the charger to maintain mesh sync.',
-        timestamp: now,
+    for (const rule of this.rules.values()) {
+      if (!rule.isEnabled || rule.triggerType !== triggerType) continue;
+
+      // 1. Evaluate Condition
+      let matches = false;
+      try {
+        matches = rule.condition(context);
+      } catch (_) {
+        matches = false;
+      }
+      if (!matches) continue;
+
+      // 2. Cooldown check
+      if (rule.lastExecutedAt && now - rule.lastExecutedAt < rule.cooldownMs) {
+        results.push({
+          ruleId: rule.id,
+          ruleName: rule.name,
+          intent: rule.intent,
+          status: 'COOLDOWN_ACTIVE',
+          durationMs: 0,
+        });
+        continue;
+      }
+
+      // 3. Safety Check: P2 Destructive barrier
+      if (rule.riskClass === 'P2_DESTRUCTIVE' && !userConfirmed) {
+        results.push({
+          ruleId: rule.id,
+          ruleName: rule.name,
+          intent: rule.intent,
+          status: 'CONFIRMATION_REQUIRED',
+          actionTaken: `Action '${rule.targetTool}' requires explicit confirmation.`,
+          durationMs: 0,
+        });
+        continue;
+      }
+
+      // 4. Tool Execution Gate
+      const startExec = Date.now();
+      const toolRes = await this.toolRegistry.executeTool(
+        rule.targetTool,
+        rule.toolParams,
+        {
+          sessionId: 'automation-session-main',
+          commandId: `auto-${rule.id}-${now}`,
+          userConfirmed,
+          initiator: 'AUTOMATION',
+        }
+      );
+
+      rule.lastExecutedAt = now;
+      const durationMs = Date.now() - startExec;
+      const observation = toolRes.success
+        ? `Successfully executed ${rule.targetTool}: ${JSON.stringify(toolRes.data || {})}`
+        : `Execution failed on ${rule.targetTool}: ${toolRes.error}`;
+
+      // 5. Memory Write: Persist observation into Memory store
+      let memoryLogged = false;
+      if (this.memoryManager && toolRes.success) {
+        try {
+          await this.memoryManager.save({
+            scope: 'TASK',
+            key: `auto_${rule.id}`,
+            content: `Automation [${rule.name}] executed: ${observation}`,
+            tags: ['automation', rule.triggerType.toLowerCase()],
+            importance: 6,
+          });
+          memoryLogged = true;
+        } catch (_) {}
+      }
+
+      const execResult: AutomationExecutionResult = {
+        ruleId: rule.id,
+        ruleName: rule.name,
+        intent: rule.intent,
+        status: toolRes.success ? 'EXECUTED' : 'FAILED',
+        actionTaken: rule.targetTool,
+        observation,
+        memoryLogged,
+        durationMs,
       };
-      this.recentProactiveEvents.unshift(ev);
-      return ev;
+
+      this.executionHistory.unshift(execResult);
+      if (this.executionHistory.length > 50) this.executionHistory.pop();
+      results.push(execResult);
     }
 
-    if (telemetry.pendingOrders >= 3) {
-      this.lastProactiveDispatchTime = now;
-      const ev: ProactiveEvent = {
-        id: `event-${now}`,
-        type: 'CUSTOMER_ALERT',
-        priority: 'NORMAL',
-        spokenPromptUrdu: 'Jani, 3 naye customer orders waiting mein hain. Kya WhatsApp replies draft kar doon?',
-        spokenPromptEnglish: 'Mursaleen, 3 customer inquiries are awaiting responses. Shall I draft the replies?',
-        timestamp: now,
-      };
-      this.recentProactiveEvents.unshift(ev);
-      return ev;
-    }
-
-    return null;
+    return results;
   }
 
-  public getRecentEvents(): ProactiveEvent[] {
-    return this.recentProactiveEvents.slice(0, 10);
+  public getExecutionHistory(): AutomationExecutionResult[] {
+    return this.executionHistory;
+  }
+
+  private seedDefaultRules(): void {
+    // 1. Low Battery Saver Rule (P0_SAFE)
+    this.registerRule({
+      id: 'rule-low-battery',
+      name: 'Low Battery Optimization',
+      triggerType: 'BATTERY_THRESHOLD',
+      condition: (ctx) => (ctx.batteryLevel ?? 100) <= 20 && !ctx.isCharging,
+      intent: 'Audit battery health when phone drops below 20%',
+      targetTool: 'device_battery',
+      toolParams: {},
+      riskClass: 'P0_SAFE',
+      isEnabled: true,
+      cooldownMs: 300000, // 5 min
+    });
+
+    // 2. Wi-Fi Connection Sync Rule (P0_SAFE)
+    this.registerRule({
+      id: 'rule-wifi-connected',
+      name: 'Workstation Mesh Link on Wi-Fi Connect',
+      triggerType: 'WIFI_STATE',
+      condition: (ctx) => ctx.connected === true,
+      intent: 'Sync device state when connected to trusted home/work mesh',
+      targetTool: 'device_battery',
+      toolParams: {},
+      riskClass: 'P0_SAFE',
+      isEnabled: true,
+      cooldownMs: 60000,
+    });
+
+    // 3. Acoustic Locator Beacon (P1_CONTROLLED)
+    this.registerRule({
+      id: 'rule-anti-loss-siren',
+      name: 'Anti-Loss Phone Recovery Siren',
+      triggerType: 'VOICE_SHORTCUT',
+      condition: (ctx) => ctx.shortcut === 'FIND_PHONE',
+      intent: 'Trigger loud acoustic beacon to locate phone',
+      targetTool: 'device_anti_loss_siren',
+      toolParams: { maxVolume: true },
+      riskClass: 'P1_CONTROLLED',
+      isEnabled: true,
+      cooldownMs: 15000,
+    });
+  }
+
+  public getScheduledTasks(): any[] {
+    return Array.from(this.rules.values()).map((r) => ({
+      id: r.id,
+      name: r.name,
+      trigger: r.triggerType,
+      intent: r.intent,
+      riskClass: r.riskClass,
+      enabled: r.isEnabled,
+      lastFired: r.lastExecutedAt,
+    }));
+  }
+
+  public getRecentEvents(): any[] {
+    return this.executionHistory.slice(-20);
+  }
+
+  public toggleTask(taskId: string): boolean {
+    const rule = this.rules.get(taskId);
+    if (rule) {
+      rule.isEnabled = !rule.isEnabled;
+      return true;
+    }
+    return false;
+  }
+
+  public generateMorningBriefing(batteryPct: number = 88, lang: string = 'ur-Roman'): string {
+    const isUrdu = lang === 'ur' || lang === 'ur-Roman';
+    const activeRuleCount = Array.from(this.rules.values()).filter((r) => r.isEnabled).length;
+    if (isUrdu) {
+      return `Subha bakhair Mursaleen bhai! MURSAL JARVIS Online hai. Phone battery is waqt ${batteryPct}% hai, aur ${activeRuleCount} automated rules active hain. MursalCart e-commerce orders monitoring standby par hai.`;
+    }
+    return `Good morning Commander Mursaleen! MURSAL JARVIS is standing by. Battery is at ${batteryPct}%, ${activeRuleCount} closed-loop automation rules active. MursalCart business monitoring ready.`;
   }
 }
 

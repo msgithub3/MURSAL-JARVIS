@@ -138,6 +138,10 @@ export class JarvisWebSocketManager {
     return this.transportType;
   }
 
+  public getWebSocket(): WebSocket | null {
+    return this.socket;
+  }
+
   public getLastError(): WebSocketErrorInfo | null {
     return this.lastError;
   }

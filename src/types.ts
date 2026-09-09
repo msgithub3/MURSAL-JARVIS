@@ -443,6 +443,19 @@ export interface ScreenAnalysisResponse {
   redactedSensitiveFields?: number;
 }
 
+export interface ScreenMonitoringMetrics {
+  status: 'IDLE' | 'ACTIVE_PERIODIC' | 'ACTIVE_EVENT_DRIVEN';
+  mode: 'ONE_SHOT' | 'PERIODIC_SAMPLING' | 'EVENT_DRIVEN_REALTIME';
+  frequencyHz: number;
+  lastTransportLatencyMs: number;
+  lastVisionInferenceLatencyMs: number;
+  totalFramesIngested: number;
+  droppedFramesCount: number;
+  memoryBufferSizeBytes: number;
+  activeVisionModel: string;
+  lastChangeDetectedAt?: number;
+}
+
 // ==========================================
 // 4. CONNECTION MANAGER & PRIVACY TYPES
 // ==========================================

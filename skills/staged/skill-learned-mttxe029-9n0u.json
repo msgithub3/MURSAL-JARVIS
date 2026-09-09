@@ -1,0 +1,21 @@
+{
+  "id": "skill-learned-mttxe029-9n0u",
+  "name": "Audit Daraz Product Viability",
+  "version": "1.0.0",
+  "author": "JARVIS Autonomous Synthesizer (/learn)",
+  "category": "COMMERCE",
+  "description": "Autonomous skill synthesized from verified task execution: \"audit daraz product viability and sound alert\"",
+  "instructions": "# Autonomous Skill Recipe for \"audit daraz product viability and sound alert\"\nSynthesized on: 2026-09-09T09:58:17.552Z\n\n## Step Sequence:\n1. Execute 'mursalcart_eval_product' with parameters: {\"productName\":\"Smart Watch\",\"procurementPkr\":1000,\"sellingPkr\":2200}\n2. Execute 'device_anti_loss_siren' with parameters: {}",
+  "requiredTools": [
+    "device_anti_loss_siren",
+    "mursalcart_eval_product"
+  ],
+  "permissionsRequired": [
+    "MODIFY_AUDIO_SETTINGS",
+    "VIBRATE"
+  ],
+  "riskClass": "P1_CONTROLLED",
+  "checksum": "sha256-staged-skill-learned-mttxe029-9n0u",
+  "isEnabled": false,
+  "isStaged": true
+}

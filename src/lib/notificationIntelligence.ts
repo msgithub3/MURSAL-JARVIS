@@ -1,23 +1,43 @@
 /**
  * MURSAL JARVIS — Notification Intelligence Engine
  * 
- * Capabilities:
- * - Smart Categorization (CUSTOMER_ORDER, CHAT_VIP, SYSTEM_BATTERY, SECURITY, PROMO_SPAM)
- * - Priority Scoring (1 to 10)
- * - Spam / Marketing Noise Suppression
- * - Conversational Pakistani Read-Aloud Audio Summarizer
- * - Quick Action Suggestions (e.g. "Draft WhatsApp Reply", "Inspect Node")
+ * 9 Standard Classifications:
+ * - PERSONAL (Friends, family direct messages)
+ * - WORK (Business, Slack, Teams, client communications)
+ * - OTP (One-time passwords, 2FA codes — NEVER persisted or leaked)
+ * - SECURITY (Account login alerts, password resets, suspicious logins)
+ * - MARKETING (Promotional ads, discounts, commercial offers)
+ * - SYSTEM (Android battery, storage, Wi-Fi, OS updates)
+ * - URGENT (Critical reminders, emergency alerts, deadlines)
+ * - MISSED_CALL (Missed phone / VoIP audio calls)
+ * - SOCIAL (Instagram, TikTok, Twitter notifications)
+ * 
+ * Security Invariant:
+ * - OTPs, PINs, passwords, and security tokens are redacted BEFORE storage.
+ * - Secret credentials are NEVER exported or spoken aloud without explicit policy.
  */
+
+export type NotificationCategory =
+  | 'PERSONAL'
+  | 'WORK'
+  | 'OTP'
+  | 'SECURITY'
+  | 'MARKETING'
+  | 'SYSTEM'
+  | 'URGENT'
+  | 'MISSED_CALL'
+  | 'SOCIAL';
 
 export interface SystemNotification {
   id: string;
-  sourceApp: string; // com.whatsapp, com.daraz, pk.markaz, android
+  sourceApp: string; // com.whatsapp, com.google.android.apps.messaging, etc.
   title: string;
   body: string;
   timestamp: number;
   priority: number; // 1 (lowest) to 10 (urgent)
-  category: 'CUSTOMER_ORDER' | 'CHAT_VIP' | 'SYSTEM_ALERT' | 'SECURITY' | 'PROMO_SPAM';
+  category: NotificationCategory;
   isSpam: boolean;
+  containsSecret: boolean;
   suggestedAction?: string;
 }
 
@@ -51,58 +71,106 @@ export class NotificationIntelligence {
     });
   }
 
-  public addNotification(raw: { sourceApp: string; title: string; body: string; timestamp: number }): SystemNotification {
-    const textLower = `${raw.title} ${raw.body}`.toLowerCase();
+  /**
+   * Adds and classifies an incoming Android notification with automatic secret scrubbing
+   */
+  public addNotification(raw: {
+    sourceApp: string;
+    title: string;
+    body: string;
+    timestamp?: number;
+  }): SystemNotification {
+    const textCombined = `${raw.title} ${raw.body}`;
+    const textLower = textCombined.toLowerCase();
 
-    // 1. Spam detection
-    const isSpam = /sale sale|50% off|limited offer|download now|jackpot|free spins/i.test(textLower);
+    // 1. Detect and sanitize OTP / Secrets
+    const otpPattern = /\b\d{4,8}\b|code is \d+|otp is \d+|verification code|one-time password/i;
+    const isOtp = otpPattern.test(textCombined) || raw.sourceApp.includes('messaging') && /code|pin|verification/i.test(textLower);
 
-    // 2. Category & Priority classification
-    let category: SystemNotification['category'] = 'CHAT_VIP';
+    // Redact OTP/passwords from stored body
+    let sanitizedBody = raw.body;
+    let containsSecret = false;
+    if (isOtp) {
+      containsSecret = true;
+      sanitizedBody = raw.body.replace(/\b\d{4,8}\b/g, '[REDACTED_OTP]');
+    }
+
+    // 2. Classify into 9 strict categories
+    let category: NotificationCategory = 'PERSONAL';
     let priority = 5;
-    let suggestedAction = 'Mark as Read';
+    let isSpam = false;
+    let suggestedAction = 'View';
 
-    if (raw.sourceApp.includes('markaz') || raw.sourceApp.includes('daraz') || textLower.includes('order') || textLower.includes('parcel')) {
-      category = 'CUSTOMER_ORDER';
+    if (isOtp) {
+      category = 'OTP';
       priority = 9;
-      suggestedAction = 'Draft Customer Reply';
-    } else if (textLower.includes('battery') || textLower.includes('storage') || textLower.includes('wifi')) {
-      category = 'SYSTEM_ALERT';
-      priority = 6;
-      suggestedAction = 'Check Device HUD';
-    } else if (textLower.includes('alarm') || textLower.includes('security') || textLower.includes('lost')) {
+      suggestedAction = 'Copy One-Time Code';
+    } else if (/missed call|call from|audio call/i.test(textLower)) {
+      category = 'MISSED_CALL';
+      priority = 8;
+      suggestedAction = 'Call Back';
+    } else if (/unauthorized|security alert|login detected|password reset|suspicious/i.test(textLower)) {
       category = 'SECURITY';
       priority = 10;
-      suggestedAction = 'Sound Anti-Loss Siren';
-    } else if (isSpam) {
-      category = 'PROMO_SPAM';
+      suggestedAction = 'Review Security Alert';
+    } else if (/emergency|deadline|urgent|flight|hospital|critical/i.test(textLower)) {
+      category = 'URGENT';
+      priority = 10;
+      suggestedAction = 'Open Immediately';
+    } else if (/sale|50% off|discount|cashback|voucher|limited offer|win prize|promo/i.test(textLower)) {
+      category = 'MARKETING';
       priority = 1;
+      isSpam = true;
       suggestedAction = 'Dismiss';
+    } else if (raw.sourceApp.includes('slack') || raw.sourceApp.includes('teams') || /invoice|meeting|project|client|order/i.test(textLower)) {
+      category = 'WORK';
+      priority = 7;
+      suggestedAction = 'Open Work App';
+    } else if (raw.sourceApp.includes('instagram') || raw.sourceApp.includes('twitter') || raw.sourceApp.includes('facebook') || /liked your|commented|started following/i.test(textLower)) {
+      category = 'SOCIAL';
+      priority = 3;
+      suggestedAction = 'Open Social Feed';
+    } else if (raw.sourceApp.includes('android') || /battery|storage|wifi|bluetooth|system update/i.test(textLower)) {
+      category = 'SYSTEM';
+      priority = 4;
+      suggestedAction = 'Check System HUD';
+    } else {
+      category = 'PERSONAL';
+      priority = 6;
+      suggestedAction = 'Reply';
     }
 
     const notif: SystemNotification = {
-      id: `notif-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       sourceApp: raw.sourceApp,
       title: raw.title,
-      body: raw.body,
+      body: sanitizedBody,
       timestamp: raw.timestamp || Date.now(),
       priority,
       category,
       isSpam,
+      containsSecret,
       suggestedAction,
     };
 
     this.notifications.unshift(notif);
-    if (this.notifications.length > 50) this.notifications.pop();
+    if (this.notifications.length > 100) this.notifications.pop();
     return notif;
   }
 
+  public getNotifications(category?: NotificationCategory): SystemNotification[] {
+    if (category) {
+      return this.notifications.filter((n) => n.category === category);
+    }
+    return this.notifications;
+  }
+
   public getUnreadImportant(): SystemNotification[] {
-    return this.notifications.filter((n) => !n.isSpam && n.priority >= 5);
+    return this.notifications.filter((n) => !n.isSpam && n.priority >= 6);
   }
 
   /**
-   * Generates a conversational Pakistani spoken digest for JARVIS
+   * Generates a conversational spoken summary for the Voice Cockpit
    */
   public generateSpokenDigest(lang = 'ur-Roman'): string {
     const important = this.getUnreadImportant();
@@ -112,14 +180,15 @@ export class NotificationIntelligence {
         : 'Jani, koi naya zaroori notification nahi aaya, sab theek chal raha hai.';
     }
 
-    const orderCount = important.filter((n) => n.category === 'CUSTOMER_ORDER').length;
-    const topMsg = important[0];
+    const urgentCount = important.filter((n) => n.category === 'URGENT' || n.category === 'SECURITY').length;
+    const workCount = important.filter((n) => n.category === 'WORK').length;
+    const top = important[0];
 
     if (lang === 'en') {
-      return `Mursaleen, you have ${important.length} important updates. ${orderCount > 0 ? `${orderCount} customer order inquiries pending.` : ''} Latest: ${topMsg.title}: "${topMsg.body.slice(0, 70)}..."`;
+      return `Mursaleen, you have ${important.length} important updates. ${urgentCount > 0 ? `${urgentCount} urgent security alerts.` : ''} ${workCount > 0 ? `${workCount} work inquiries.` : ''} Latest from ${top.title}: "${top.body.slice(0, 70)}..."`;
     }
 
-    return `Jani, ${important.length} zaroori notifications hain. ${orderCount > 0 ? `${orderCount} customer order inquiries aayi hui hain.` : ''} Sab se taaza update: ${topMsg.title} se hai: "${topMsg.body.slice(0, 65)}...". Kya reply tayyar karoon?`;
+    return `Jani, ${important.length} zaroori notifications hain. ${urgentCount > 0 ? `${urgentCount} urgent security alerts hain.` : ''} ${workCount > 0 ? `${workCount} work updates hain.` : ''} Sab se taaza update ${top.title} se hai: "${top.body.slice(0, 65)}...".`;
   }
 }
 

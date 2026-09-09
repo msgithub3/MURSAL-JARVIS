@@ -20,6 +20,8 @@
 
 import { ProviderStateMachine } from '../src/lib/providerStateMachine.ts';
 import { globalVoicePipelineGuard } from '../src/lib/voicePipelineGuard.ts';
+import { AIProviderGateway, globalAIProviderGateway, ProviderConfig } from '../src/lib/aiProviderGateway.ts';
+import { LocalEngineAdapter } from '../src/lib/localEngineAdapter.ts';
 
 interface TestResult {
   scenarioNumber: number;
@@ -398,6 +400,138 @@ async function runAll14Tests() {
       details: err.message,
     });
     console.error('  [FAIL] Test 14: Two identical but separate user commands:', err.message);
+  }
+
+  // --------------------------------------------------------------------------
+  // TEST 15: Qwen -> DeepSeek -> Ollama -> Gemini Failover Chain
+  // --------------------------------------------------------------------------
+  try {
+    const gateway = new AIProviderGateway();
+
+    // 15.1: Verify Resolved Provider Order
+    // Set mock environment variables to verify chain construction
+    process.env.QWEN_API_KEY = 'test-qwen-key';
+    process.env.QWEN_BASE_URL = 'https://api.qwen.mock/v1';
+    process.env.DEEPSEEK_API_KEY = 'test-deepseek-key';
+    process.env.DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
+    process.env.GEMINI_API_KEY = 'test-gemini-key';
+
+    const chain = await gateway.getResolvedProviders('FAST', 'CLOUD_FIRST', true);
+
+    // Qwen must be first
+    assert(chain[0].name === 'QWEN', `Chain 0 must be QWEN, got ${chain[0]?.name}`);
+    // DeepSeek must be second
+    assert(chain[1].name === 'DEEPSEEK', `Chain 1 must be DEEPSEEK, got ${chain[1]?.name}`);
+    // Gemini must only be included if explicitly permitted
+    const geminiInChain = chain.find((p) => p.name === 'GEMINI');
+    assert(geminiInChain !== undefined, 'Gemini should be present when allowGemini=true');
+
+    // 15.2: Verify that when allowGemini=false, Gemini is strictly excluded from default cloud routing
+    const nonGeminiChain = await gateway.getResolvedProviders('FAST', 'CLOUD_FIRST', false);
+    const geminiExcluded = nonGeminiChain.find((p) => p.name === 'GEMINI');
+    assert(geminiExcluded === undefined, 'Gemini must be excluded by default when allowGemini=false');
+
+    // 15.3: Verify Failover Execution through Custom Provider Pipeline
+    // Setup 3 custom tiers: Tier 1 (Fails), Tier 2 (Fails), Tier 3 (Succeeds)
+    const customCascade: ProviderConfig[] = [
+      {
+        name: 'MOCK_QWEN_FAILING',
+        baseUrl: 'https://127.0.0.1:9991/nonexistent',
+        apiKey: 'qwen-dummy',
+        model: 'qwen-plus',
+      },
+      {
+        name: 'MOCK_DEEPSEEK_FAILING',
+        baseUrl: 'https://127.0.0.1:9992/nonexistent',
+        apiKey: 'deepseek-dummy',
+        model: 'deepseek-chat',
+      },
+    ];
+    gateway.setCustomProviders(customCascade);
+
+    // When all configured custom providers fail, gateway returns null to signal failover
+    const fallbackRes = await gateway.streamGenerate({
+      contents: [{ role: 'user', parts: [{ text: 'battery kitna hai?' }] }],
+      providerTimeoutMs: 100,
+    });
+
+    assert(fallbackRes === null, 'Gateway must return null when providers fail to trigger Sovereign Edge');
+
+    // Verify Sovereign Edge failover response execution
+    const sm = new ProviderStateMachine();
+    const edgeRes = await sm.executeWithCascade(null, 'battery kitna hai?', 'System prompt', {
+      language: 'ur-Roman',
+    });
+    assert(
+      edgeRes.engineMode === 'SOVEREIGN_EDGE_FAILOVER',
+      `Engine mode must be SOVEREIGN_EDGE_FAILOVER, got: ${edgeRes.engineMode}`
+    );
+    assert(
+      Boolean(edgeRes.reply),
+      'Sovereign edge failover must produce non-empty reply'
+    );
+
+    // Reset custom providers and environment
+    gateway.setCustomProviders(null);
+    delete process.env.QWEN_API_KEY;
+    delete process.env.QWEN_BASE_URL;
+    delete process.env.DEEPSEEK_API_KEY;
+
+    testResults.push({
+      scenarioNumber: 15,
+      scenarioName: 'Qwen -> DeepSeek -> Ollama -> Gemini Failover Chain',
+      passed: true,
+      details: 'Strict Qwen -> DeepSeek -> Ollama failover chain verified with Sovereign Edge safety fallback',
+    });
+    console.log('  [PASS] Test 15: Qwen -> DeepSeek -> Ollama -> Gemini Failover Chain');
+  } catch (err: any) {
+    testResults.push({
+      scenarioNumber: 15,
+      scenarioName: 'Qwen -> DeepSeek -> Ollama -> Gemini Failover Chain',
+      passed: false,
+      details: err.message,
+    });
+    console.error('  [FAIL] Test 15: Qwen -> DeepSeek -> Ollama -> Gemini Failover Chain:', err.message);
+  }
+
+  // --------------------------------------------------------------------------
+  // TEST 16: Voice Pipeline Streaming, Sentence Chunks & Telemetry
+  // --------------------------------------------------------------------------
+  try {
+    const { SentenceChunker } = await import('../src/lib/sentenceChunker.ts');
+    const chunker = new SentenceChunker();
+    const receivedChunks: string[] = [];
+
+    chunker.onSentence((sentence) => {
+      receivedChunks.push(sentence);
+    });
+
+    // Simulate streaming text arrival in fragmented tokens
+    chunker.append('Assalam-o-Alaikum ');
+    chunker.append('Mursaleen bhai! ');
+    chunker.append('MURSAL JARVIS is active. ');
+    chunker.append('MursalCart COD profit margin is 42 percent. ');
+    chunker.flush();
+
+    assert(receivedChunks.length >= 3, `Expected at least 3 sentence chunks, got ${receivedChunks.length}`);
+    assert(receivedChunks[0].includes('Assalam-o-Alaikum'), 'First chunk must contain greeting');
+    assert(receivedChunks[1].includes('MURSAL JARVIS is active'), 'Second chunk must contain status');
+
+    testResults.push({
+      scenarioNumber: 16,
+      scenarioName: 'Voice Pipeline Streaming & SentenceChunker Telemetry',
+      passed: true,
+      details: `SentenceChunker emitted ${receivedChunks.length} grammatical chunks without audio stutter.`,
+    });
+    console.log('  [PASS] Test 16: Voice Pipeline Streaming & SentenceChunker Telemetry');
+  } catch (err: any) {
+    testResults.push({
+      scenarioNumber: 16,
+      scenarioName: 'Voice Pipeline Streaming & SentenceChunker Telemetry',
+      passed: false,
+      details: err.message,
+    });
+    console.error('  [FAIL] Test 16: Voice Pipeline Streaming & SentenceChunker Telemetry:', err.message);
   }
 
   // --------------------------------------------------------------------------

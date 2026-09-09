@@ -104,7 +104,24 @@ export function generateSovereignResponse(
     };
   }
 
-  // 3. System / Hardware / Mesh Telemetry Inquiries
+  // 3. Battery Inquiries (Specific hardware query)
+  if (/(?:battery|charge|charging|kitna charge)/i.test(lower)) {
+    const batteryLvl = state?.battery?.level ?? 88;
+    if (effectiveLang === 'ur-Roman') {
+      return {
+        reply: `Battery abhi ${batteryLvl}% hai jani. Charging ${state?.battery?.isCharging ? 'chal rahi hai' : 'nahi ho rahi'}.`,
+        intent: 'DEVICE_BATTERY',
+        toolsUsed: ['device_battery_node'],
+      };
+    }
+    return {
+      reply: `Battery is currently at ${batteryLvl}%. Status is ${state?.battery?.isCharging ? 'Charging' : 'Discharging'}.`,
+      intent: 'DEVICE_BATTERY',
+      toolsUsed: ['device_battery_node'],
+    };
+  }
+
+  // 4. System / Hardware / Mesh Telemetry Inquiries
   if (/mesh|status|device|system|phone|health|nodes/i.test(lower)) {
     const batteryLvl = state?.battery?.level ?? 88;
     if (effectiveLang === 'ur-Roman') {
